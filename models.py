@@ -1,9 +1,9 @@
 """
-TripCrew Backend Platform - Phase 1 MVP
-Data Models and Shared State Schema (TripBrief)
+TripCrew Backend Platform - Phase 2 (Quality)
+Data Models, Shared State Schema (TripBrief), and Validator Schemas
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -12,6 +12,7 @@ class ClientInfo(BaseModel):
     contact: Optional[str] = Field(default=None, description="Phone, email, or handle")
     preferred_language: str = Field(default="English", description="Communication language preference")
     channel: str = Field(default="chat", description="Inquiry source channel (chat, whatsapp, web)")
+    citizenship: Optional[str] = Field(default="Indian", description="Traveler nationality for visa rules")
 
 
 class TripBasics(BaseModel):
@@ -55,6 +56,9 @@ class ActivityItem(BaseModel):
     location: Optional[str] = Field(default=None, description="Specific location or attraction")
     estimated_travel_gap: Optional[str] = Field(
         default=None, description="Travel gap or commute time from previous location"
+    )
+    opening_hours_note: Optional[str] = Field(
+        default=None, description="Verified operating hours (e.g., '09:30 AM - 05:30 PM daily')"
     )
 
 
@@ -107,9 +111,44 @@ class QuotesSummary(BaseModel):
     premium_tier: Optional[TierQuote] = None
 
 
+class DestinationWeather(BaseModel):
+    condition: str = Field(default="Pleasant & Sunny", description="Expected weather condition")
+    temperature_high_c: float = Field(default=31.0, description="Forecasted high temp in Celsius")
+    temperature_low_c: float = Field(default=22.0, description="Forecasted low temp in Celsius")
+    rain_probability_pct: int = Field(default=10, description="Probability of precipitation")
+    advisories: List[str] = Field(default_factory=list, description="Weather warnings or outdoor advisories")
+
+
+class ValidationIssue(BaseModel):
+    category: Literal["opening_hours", "travel_logistics", "budget", "visa_rules", "weather"] = Field(
+        ..., description="Validation pillar"
+    )
+    severity: Literal["critical", "warning", "info"] = Field(
+        ..., description="Issue severity (critical halts flow and triggers replan)"
+    )
+    day_number: Optional[int] = Field(default=None, description="Day index where issue occurs")
+    activity_title: Optional[str] = Field(default=None, description="Specific activity title")
+    description: str = Field(..., description="Clear explanation of the feasibility violation")
+    suggested_fix: str = Field(..., description="Actionable instruction to resolve the violation")
+
+
+class ValidationResult(BaseModel):
+    is_valid: bool = Field(..., description="True if no critical feasibility violations exist")
+    feasibility_score: float = Field(default=1.0, description="Score between 0.0 and 1.0 (1.0 = perfect feasibility)")
+    issues: List[ValidationIssue] = Field(default_factory=list, description="All detected issues")
+    feedback_for_itinerary: Optional[str] = Field(
+        default=None, description="Synthesized prompt instructions for itinerary replanning"
+    )
+    opening_hours_passed: bool = Field(default=True, description="Operating hours pillar status")
+    travel_logistics_passed: bool = Field(default=True, description="Commute and transit feasibility status")
+    budget_passed: bool = Field(default=True, description="Budget feasibility status")
+    visa_rules_passed: bool = Field(default=True, description="Visa and entry rules status")
+
+
 class TripBrief(BaseModel):
     """
     TripBrief is the central shared state model passed through all LangGraph nodes.
+    Phase 2 adds validator state, replan counters, weather intelligence, and visa advisories.
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -123,9 +162,19 @@ class TripBrief(BaseModel):
     budget: BudgetConstraint = Field(default_factory=BudgetConstraint)
     preferences_and_constraints: PreferencesAndConstraints = Field(default_factory=PreferencesAndConstraints)
 
+    # Contextual Intelligence (Phase 2 Live Integrations)
+    destination_weather: Optional[DestinationWeather] = Field(default=None, description="Live weather / climatology")
+    visa_advisory: Optional[str] = Field(default=None, description="Visa and entry requirements for traveler route")
+
     # Generated itinerary & quotes
     itinerary: List[DayPlan] = Field(default_factory=list, description="Day-by-day plan")
     quotes: Optional[QuotesSummary] = Field(default=None, description="Tiered pricing quotes")
+
+    # Quality Gate & Re-planning Loop State (Phase 2)
+    validation_result: Optional[ValidationResult] = Field(default=None, description="Critic evaluation results")
+    replan_count: int = Field(default=0, description="Number of times itinerary has been revised by critic")
+    max_retries: int = Field(default=3, description="Maximum allowed replan iterations to prevent infinite loops")
+    validator_feedback_history: List[str] = Field(default_factory=list, description="Log of critic feedback given")
 
     # Execution state machine
     status: str = Field(
@@ -156,6 +205,7 @@ class InquiryResponse(BaseModel):
     question: Optional[str] = None
     missing_fields: Optional[List[str]] = None
     trip_brief: Optional[TripBrief] = None
+    validation_summary: Optional[Dict[str, Any]] = None
     pdf_download_url: Optional[str] = None
     pdf_file_path: Optional[str] = None
     error: Optional[str] = None

@@ -1,5 +1,5 @@
 """
-TripCrew Backend Platform - Phase 1 MVP
+TripCrew Backend Platform - Phase 2 (Quality)
 Comprehensive Verification & Test Suite
 """
 
@@ -42,7 +42,7 @@ def test_clarification_flow():
 
 def test_full_pipeline_flow():
     print("\n" + "=" * 60)
-    print("TEST 2: Full End-to-End Pipeline (Complete Inquiry)")
+    print("TEST 2: Full End-to-End Pipeline with Critic Validator")
     print("=" * 60)
 
     # Complete inquiry
@@ -65,7 +65,7 @@ def test_full_pipeline_flow():
     print(f"Target Budget pp: ₹{result.budget.target_budget_per_person:,.0f}")
     print(f"Preferences: {result.preferences_and_constraints.interests}")
 
-    # Assert basic extraction
+    # Assert extraction
     assert result.status == "completed", f"Expected completed, got {result.status}"
     assert result.trip_basics.destination.lower() == "goa"
     assert result.trip_basics.origin.lower() == "mumbai"
@@ -73,6 +73,20 @@ def test_full_pipeline_flow():
     assert result.trip_basics.duration_nights == 4
     assert result.trip_basics.duration_days == 5
     assert result.budget.target_budget_per_person == 25000.0
+
+    # Assert Weather & Visa Advisories
+    assert result.destination_weather is not None, "Live destination weather must be populated"
+    print(f"Weather: {result.destination_weather.condition} ({result.destination_weather.temperature_high_c}°C)")
+    assert result.visa_advisory is not None, "Visa advisory must be populated"
+    print(f"Visa Advisory: {result.visa_advisory}")
+
+    # Assert Validator Critic Output
+    val = result.validation_result
+    assert val is not None, "ValidationResult must be present from Critic Node"
+    print(f"\nCritic Feasibility Score: {val.feasibility_score * 100:.0f}%")
+    print(f"Pillars Passed: Opening Hours={val.opening_hours_passed}, Logistics={val.travel_logistics_passed}, Budget={val.budget_passed}, Visa={val.visa_rules_passed}")
+    assert val.is_valid is True, "Itinerary must pass validation"
+    assert val.feasibility_score >= 0.90, "Feasibility score must be >= 0.90"
 
     # Assert Itinerary Generation
     print(f"\nGenerated Itinerary Days: {len(result.itinerary)}")
@@ -82,7 +96,7 @@ def test_full_pipeline_flow():
         assert len(day.activities) > 0, f"Day {day.day_number} has no activities"
         assert day.day_rationale, f"Day {day.day_number} missing rationale"
 
-    # Assert Tiered Pricing
+    # Assert Tiered Pricing Math
     print("\nTiered Quotes Breakdown:")
     q = result.quotes
     assert q is not None, "QuotesSummary must be present"
@@ -102,7 +116,6 @@ def test_full_pipeline_flow():
         print(f"    Final Quote Per Person: ₹{br.total_quote_per_person:,.0f}")
         print(f"    Note: {br.budget_comparison_note}")
 
-        # Check math
         expected_base = br.hotel_total_cost + br.transfers_total_cost + br.activities_total_cost
         assert abs(br.subtotal_base_cost - expected_base) < 1.0, "Base cost math mismatch"
         expected_margin = round(expected_base * 0.15, 2)
@@ -120,21 +133,49 @@ def test_full_pipeline_flow():
     print(f"\nGenerated PDF Quote File: {pdf_file.name}")
     print(f"PDF File Size: {pdf_size:,} bytes")
     assert pdf_size > 1000, "PDF file size too small (likely corrupt or empty)"
-    print(">>> TEST 2 PASSED: Full itinerary, 3 tiers priced with 15% margin, and PDF generated successfully!")
+    print(">>> TEST 2 PASSED: Full itinerary validated by Critic, 3 tiers dynamically priced, and quality PDF generated!")
+
+
+def test_re_planning_loop():
+    print("\n" + "=" * 60)
+    print("TEST 3: Re-Planning Loop (Automated Critic Self-Correction)")
+    print("=" * 60)
+
+    # Active pace triggers an initial schedule error that the Critic catches and corrects
+    active_inquiry = (
+        "Fast-paced action-packed Goa trip for 4 friends from Pune, 4 nights in late November, 25k budget each. "
+        "We want packed schedules and active water sports."
+    )
+    result: TripBrief = run_inquiry_pipeline(raw_message=active_inquiry)
+
+    print(f"Final Status: {result.status}")
+    print(f"Total Re-planning Iterations Triggered: {result.replan_count}")
+    print(f"Validator Feedback History: {result.validator_feedback_history}")
+    print(f"Final Feasibility Score: {result.validation_result.feasibility_score * 100:.0f}%")
+
+    assert result.status == "completed", "Pipeline must complete successfully"
+    assert result.replan_count >= 1, "Re-planning loop must be triggered at least once"
+    assert result.replan_count <= result.max_retries, "Re-planning must strictly obey max_retries limit"
+    assert result.validation_result.is_valid is True, "Final revised itinerary must be valid"
+    assert result.validation_result.feasibility_score >= 0.90, "Final feasibility score must be >= 0.90"
+    print(">>> TEST 3 PASSED: Critic node successfully detected scheduling error and triggered automated replanning loop!")
 
 
 def test_fastapi_endpoints():
     print("\n" + "=" * 60)
-    print("TEST 3: FastAPI REST API Endpoints")
+    print("TEST 4: FastAPI REST API Endpoints with Quality Gates")
     print("=" * 60)
 
     ensure_startup_resources()
     client = TestClient(app)
 
-    # 1. Health check
+    # 1. Health check with live integrations
     res_health = client.get("/health")
     assert res_health.status_code == 200
-    print(f"GET /health: {res_health.json()}")
+    health_data = res_health.json()
+    print(f"GET /health: {health_data}")
+    assert health_data["status"] == "healthy"
+    assert "integrations" in health_data
 
     # 2. Inquiry endpoint with clarification required
     res_clarify = client.post(
@@ -161,9 +202,12 @@ def test_fastapi_endpoints():
     assert res_complete.status_code == 200
     data_complete = res_complete.json()
     print(f"POST /api/v1/inquiry (Complete): status={data_complete['status']}")
+    print(f"  Validation Summary: {data_complete.get('validation_summary')}")
     print(f"  PDF URL: {data_complete['pdf_download_url']}")
     print(f"  Local Path: {data_complete['pdf_file_path']}")
     assert data_complete["status"] == "completed"
+    assert data_complete["validation_summary"] is not None
+    assert data_complete["validation_summary"]["is_valid"] is True
     assert data_complete["pdf_download_url"] is not None
     assert data_complete["pdf_file_path"] is not None
 
@@ -174,13 +218,14 @@ def test_fastapi_endpoints():
     assert res_pdf.headers["content-type"] == "application/pdf"
     print(f"GET /api/v1/quotes/{pdf_filename}: Received {len(res_pdf.content):,} bytes of PDF data")
 
-    print(">>> TEST 3 PASSED: All FastAPI endpoints behaving correctly!")
+    print(">>> TEST 4 PASSED: All FastAPI endpoints with Quality validation behaving correctly!")
 
 
 if __name__ == "__main__":
     test_clarification_flow()
     test_full_pipeline_flow()
+    test_re_planning_loop()
     test_fastapi_endpoints()
     print("\n" + "=" * 60)
-    print("ALL TRIPCREW BACKEND PHASE 1 MVP TESTS PASSED!")
+    print("ALL TRIPCREW BACKEND PHASE 2 (QUALITY) TESTS PASSED!")
     print("=" * 60)
